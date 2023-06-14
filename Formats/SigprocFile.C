@@ -6,6 +6,7 @@
  ***************************************************************************/
 
 #include <iostream>
+#include <cmath>
 #include <float.h>
 #include <stdexcept>
 
@@ -42,8 +43,8 @@ SigprocFile::SigprocFile (const char* filename, bool _fswap)
   tsamp = m_header.tsamp;  // in seconds
   spectra_rate = 1 / tsamp;
 
-	f0 = m_header.fch1;
-	df = m_header.foff;
+  f0 = m_header.fch1;
+  df = m_header.foff;
 
   utc_start = mjd2utctm (m_header.tstart);
   int buffer_size = 64;
@@ -102,8 +103,8 @@ size_t SigprocFile::get_data(size_t nsamps, char* data)
       }
       float mean = sum / nfloats;
 
-      offset = (2 ^ 31) - mean;
-      scale = (max_float - min_float) / (2 ^ 28);
+      offset = powf(2, 31) - mean;
+      scale = (max_float - min_float) / powf(2, 28);
       first_time = false;
     }
 
