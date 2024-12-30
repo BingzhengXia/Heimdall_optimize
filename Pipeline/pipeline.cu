@@ -80,7 +80,7 @@ void stop_timer(Stopwatch &timer) {}
 template <typename T, typename U>
 std::pair<T &, U &> tie(T &a, U &b) { return std::pair<T &, U &>(a, b); }
 
-const int N_threads = 4; // 设置流的数目
+const int N_threads = 7; // 设置流的数目
 #define THRUST_DEBUG 1
 
 struct hd_pipeline_t
@@ -482,13 +482,17 @@ hd_error hd_execute(hd_pipeline pl,
   std::vector<thrust::device_vector<hd_size>> d_giant_inds_t(N_threads);
   std::vector<thrust::device_vector<hd_size>> d_giant_begins_t(N_threads);
   std::vector<thrust::device_vector<hd_size>> d_giant_ends_t(N_threads);
+
+  std::vector<thrust::device_vector<hd_size>> d_giant_filter_inds_t(N_threads);
+  std::vector<thrust::device_vector<hd_size>> d_giant_dm_inds_t(N_threads);
+  std::vector<thrust::device_vector<hd_size>> d_giant_members_t(N_threads);
   // thrust::device_vector<hd_float> d_giant_peaks;
   // thrust::device_vector<hd_size> d_giant_inds;
   // thrust::device_vector<hd_size> d_giant_begins;
   // thrust::device_vector<hd_size> d_giant_ends;
-  thrust::device_vector<hd_size> d_giant_filter_inds;
-  thrust::device_vector<hd_size> d_giant_dm_inds;
-  thrust::device_vector<hd_size> d_giant_members;
+  // thrust::device_vector<hd_size> d_giant_filter_inds;
+  // thrust::device_vector<hd_size> d_giant_dm_inds;
+  // thrust::device_vector<hd_size> d_giant_members;
 
   typedef thrust::device_ptr<hd_float> dev_float_ptr;
   typedef thrust::device_ptr<hd_size> dev_size_ptr;
@@ -806,10 +810,10 @@ hd_error hd_execute(hd_pipeline pl,
           checkThrust("thrust::transform 739");
           // #pragma omp critical
           // {
-          d_giant_filter_inds.resize(d_giant_peaks_t[tid].size(), filter_idx);
-          d_giant_dm_inds.resize(d_giant_peaks_t[tid].size(), dm_idx);
+          d_giant_filter_inds_t[tid].resize(d_giant_peaks_t[tid].size(), filter_idx);
+          d_giant_dm_inds_t[tid].resize(d_giant_peaks_t[tid].size(), dm_idx);
           // Note: This could be used to track total member samples if desired
-          d_giant_members.resize(d_giant_peaks_t[tid].size(), 1);
+          d_giant_members_t[tid].resize(d_giant_peaks_t[tid].size(), 1);
           checkThrust("thrust::transform 739");
           // }
 
@@ -822,44 +826,62 @@ hd_error hd_execute(hd_pipeline pl,
   }
 #pragma omp barrier
   printf("thread complete!\n");
-  size_t total_size = 0;
-  for (size_t i = 0; i < N_threads; ++i)
-  {
-    total_size += d_giant_peaks_t[i].size();
+  for (size_t i = 0; i < N_threads; ++i){
+    cout<<"thread "<<i<<" grint indx size is:"<<d_giant_inds_t[i].size()<<endl;
   }
-  thrust::device_vector<hd_float> d_giant_peaks(total_size);
-  thrust::device_vector<hd_size> d_giant_inds(total_size);
-  thrust::device_vector<hd_size> d_giant_begins(total_size);
-  thrust::device_vector<hd_size> d_giant_ends(total_size);
+
+  // size_t total_size = 0;
+  // for (size_t i = 0; i < N_threads; ++i)
+  // {
+  //   total_size += d_giant_peaks_t[i].size();
+  // }
+  thrust::device_vector<hd_float> d_giant_peaks;
+  thrust::device_vector<hd_size> d_giant_inds;
+  thrust::device_vector<hd_size> d_giant_begins;
+  thrust::device_vector<hd_size> d_giant_ends;
+   thrust::device_vector<hd_size> d_giant_filter_inds;
+   thrust::device_vector<hd_size> d_giant_dm_inds;
+   thrust::device_vector<hd_size> d_giant_members;
   size_t offset = 0; // 用于追踪拷贝到新 vector 中的位置
 
   // 合并 d_giant_peaks
   for (size_t i = 0; i < N_threads; ++i)
   {
-    size_t current_size = d_giant_peaks_t[i].size();
-    thrust::copy(d_giant_peaks_t[i].begin(), d_giant_peaks_t[i].end(), d_giant_peaks.begin());
+    d_giant_peaks.insert(d_giant_peaks.end(), d_giant_peaks_t[i].begin(), d_giant_peaks_t[i].end());
+    d_giant_filter_inds.insert(d_giant_filter_inds.end(), d_giant_filter_inds_t[i].begin(), d_giant_filter_inds_t[i].end());
+    d_giant_dm_inds.insert(d_giant_dm_inds.end(), d_giant_dm_inds_t[i].begin(), d_giant_dm_inds_t[i].end());
+    d_giant_members.insert(d_giant_members.end(), d_giant_members_t[i].begin(), d_giant_members_t[i].end());
+    // size_t current_size = d_giant_peaks_t[i].size();
+    // thrust::copy(d_giant_peaks_t[i].begin(), d_giant_peaks_t[i].end(), thrust::back_inserter(d_giant_peaks));
   }
+  cout<<"d_giant_peaks size is:"<<d_giant_peaks.size()<<endl;
 
   // 合并 d_giant_inds
   for (size_t i = 0; i < N_threads; ++i)
   {
-    size_t current_size = d_giant_inds_t[i].size();
-    thrust::copy(d_giant_inds_t[i].begin(), d_giant_inds_t[i].end(), d_giant_inds.begin());
+    d_giant_inds.insert(d_giant_inds.end(), d_giant_inds_t[i].begin(), d_giant_inds_t[i].end());
+    // size_t current_size = d_giant_inds_t[i].size();
+    // thrust::copy(d_giant_inds_t[i].begin(), d_giant_inds_t[i].end(), thrust::back_inserter(d_giant_inds));
   }
+  cout<<"d_giant_inds size is:"<<d_giant_inds.size()<<endl;
 
   // 合并 d_giant_begins
   for (size_t i = 0; i < N_threads; ++i)
   {
-    size_t current_size = d_giant_begins_t[i].size();
-    thrust::copy(d_giant_begins_t[i].begin(), d_giant_begins_t[i].end(), d_giant_begins.begin());
+    // size_t current_size = d_giant_begins_t[i].size();
+    d_giant_begins.insert(d_giant_begins.end(), d_giant_begins_t[i].begin(), d_giant_begins_t[i].end());
+    // thrust::copy(d_giant_begins_t[i].begin(), d_giant_begins_t[i].end(), thrust::back_inserter(d_giant_begins));
   }
+  cout<<"d_giant_begins size is:"<<d_giant_begins.size()<<endl;
 
   // 合并 d_giant_ends
   for (size_t i = 0; i < N_threads; ++i)
   {
-    size_t current_size = d_giant_ends_t[i].size();
-    thrust::copy(d_giant_ends_t[i].begin(), d_giant_ends_t[i].end(), d_giant_ends.begin());
+    d_giant_ends.insert(d_giant_ends.end(), d_giant_ends_t[i].begin(), d_giant_ends_t[i].end());
+    // size_t current_size = d_giant_ends_t[i].size();
+    // thrust::copy(d_giant_ends_t[i].begin(), d_giant_ends_t[i].end(), thrust::back_inserter(d_giant_ends));
   }
+  cout<<"d_giant_ends size is:"<<d_giant_ends.size()<<endl;
 
   // 清理 CUDA 流和锁页内存
   for (auto &stream : streams)
@@ -911,6 +933,7 @@ hd_error hd_execute(hd_pipeline pl,
   ConstRawCandidates *const_d_giants = (ConstRawCandidates *)&d_giants;
 
   hd_size label_count;
+   checkThrust("label_candidate_cluster");
   error = label_candidate_clusters(giant_count,
                                    *const_d_giants,
                                    pl->params.cand_sep_time,
@@ -918,6 +941,8 @@ hd_error hd_execute(hd_pipeline pl,
                                    pl->params.cand_sep_dm,
                                    d_giant_labels_ptr,
                                    &label_count);
+  checkThrust("label_candidate_cluster");
+
   if (error != HD_NO_ERROR)
   {
     return throw_error(error);
