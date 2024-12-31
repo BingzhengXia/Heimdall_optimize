@@ -552,7 +552,7 @@ hd_error hd_execute(hd_pipeline pl,
   // 锁页内存分配
   dedisp_byte *pinned_dm_series;
   CHECK(cudaHostAlloc(&pinned_dm_series, pl->h_dm_series.size() * sizeof(hd_byte), cudaHostAllocDefault));
-  printf("h_dm_series.size = %d, type:%s\n", pl->h_dm_series.size(), typeid(hd_byte).name());
+  // printf("h_dm_series.size = %d, type:%s\n", pl->h_dm_series.size(), typeid(hd_byte).name());
 
   // 将原始数据移入锁页内存
   std::memcpy(pinned_dm_series, thrust::raw_pointer_cast(pl->h_dm_series.data()), pl->h_dm_series.size() * sizeof(hd_byte));
@@ -571,9 +571,6 @@ hd_error hd_execute(hd_pipeline pl,
 
     unsigned int num_threads = omp_get_num_threads();
     int tid = omp_get_thread_num();
-    // CHECK(cudaSetDevice(tid));
-    // printf("Thread %d starting\n", tid);
-    printf("Thread %d starting of %d\n", tid, num_threads);
     cudaStream_t stream = streams[tid];
     hd_size chunk_size = dm_count / N_threads;
     hd_size start_idx = tid * chunk_size;
@@ -598,7 +595,7 @@ hd_error hd_execute(hd_pipeline pl,
       checkThrust("thrust::transform 582\n");
       hd_float *time_series = thrust::raw_pointer_cast(pl->d_time_series[tid].data());
       checkThrust("thrust::transform 582\n");
-      printf("dm_idx = %d, tid = %d\n", dm_idx, tid);
+      // printf("dm_idx = %d, tid = %d\n", dm_idx, tid);
 
       // 偏移量计算
       hd_size offset = dm_idx * series_stride * pl->params.dm_nbits / 8;
@@ -736,7 +733,7 @@ hd_error hd_execute(hd_pipeline pl,
 
             hd_float rms = rms_getter.exec(filtered_series, cur_nsamps_filtered);
             checkThrust("thrust::transform 691");
-            thrust::transform(thrust::device_ptr<hd_float>(filtered_series),
+            thrust::transform(thrust::cuda::par.on(stream), thrust::device_ptr<hd_float>(filtered_series),
                               thrust::device_ptr<hd_float>(filtered_series) + cur_nsamps_filtered,
                               thrust::make_constant_iterator(hd_float(1.0) / rms),
                               thrust::device_ptr<hd_float>(filtered_series),
@@ -751,7 +748,7 @@ hd_error hd_execute(hd_pipeline pl,
                 norm_val_iter(1.0 / sqrt((hd_float)rel_filter_width));
             checkThrust("thrust::transform 702");
             checkThrust("thrust::transform 706");
-            thrust::transform(thrust::device_ptr<hd_float>(filtered_series),
+            thrust::transform(thrust::cuda::par.on(stream), thrust::device_ptr<hd_float>(filtered_series),
                               thrust::device_ptr<hd_float>(filtered_series) + cur_nsamps_filtered,
                               norm_val_iter,
                               thrust::device_ptr<hd_float>(filtered_series),
@@ -826,8 +823,9 @@ hd_error hd_execute(hd_pipeline pl,
   }
 #pragma omp barrier
   printf("thread complete!\n");
-  for (size_t i = 0; i < N_threads; ++i){
-    cout<<"thread "<<i<<" grint indx size is:"<<d_giant_inds_t[i].size()<<endl;
+  for (size_t i = 0; i < N_threads; ++i)
+  {
+    cout << "thread " << i << " grint indx size is:" << d_giant_inds_t[i].size() << endl;
   }
 
   // size_t total_size = 0;
@@ -839,50 +837,22 @@ hd_error hd_execute(hd_pipeline pl,
   thrust::device_vector<hd_size> d_giant_inds;
   thrust::device_vector<hd_size> d_giant_begins;
   thrust::device_vector<hd_size> d_giant_ends;
-   thrust::device_vector<hd_size> d_giant_filter_inds;
-   thrust::device_vector<hd_size> d_giant_dm_inds;
-   thrust::device_vector<hd_size> d_giant_members;
-  size_t offset = 0; // 用于追踪拷贝到新 vector 中的位置
+  thrust::device_vector<hd_size> d_giant_filter_inds;
+  thrust::device_vector<hd_size> d_giant_dm_inds;
+  thrust::device_vector<hd_size> d_giant_members;
 
-  // 合并 d_giant_peaks
+  // 合并 d_giant_
   for (size_t i = 0; i < N_threads; ++i)
   {
     d_giant_peaks.insert(d_giant_peaks.end(), d_giant_peaks_t[i].begin(), d_giant_peaks_t[i].end());
+    d_giant_inds.insert(d_giant_inds.end(), d_giant_inds_t[i].begin(), d_giant_inds_t[i].end());
+    d_giant_begins.insert(d_giant_begins.end(), d_giant_begins_t[i].begin(), d_giant_begins_t[i].end());
+    d_giant_ends.insert(d_giant_ends.end(), d_giant_ends_t[i].begin(), d_giant_ends_t[i].end());
     d_giant_filter_inds.insert(d_giant_filter_inds.end(), d_giant_filter_inds_t[i].begin(), d_giant_filter_inds_t[i].end());
     d_giant_dm_inds.insert(d_giant_dm_inds.end(), d_giant_dm_inds_t[i].begin(), d_giant_dm_inds_t[i].end());
     d_giant_members.insert(d_giant_members.end(), d_giant_members_t[i].begin(), d_giant_members_t[i].end());
-    // size_t current_size = d_giant_peaks_t[i].size();
-    // thrust::copy(d_giant_peaks_t[i].begin(), d_giant_peaks_t[i].end(), thrust::back_inserter(d_giant_peaks));
   }
-  cout<<"d_giant_peaks size is:"<<d_giant_peaks.size()<<endl;
-
-  // 合并 d_giant_inds
-  for (size_t i = 0; i < N_threads; ++i)
-  {
-    d_giant_inds.insert(d_giant_inds.end(), d_giant_inds_t[i].begin(), d_giant_inds_t[i].end());
-    // size_t current_size = d_giant_inds_t[i].size();
-    // thrust::copy(d_giant_inds_t[i].begin(), d_giant_inds_t[i].end(), thrust::back_inserter(d_giant_inds));
-  }
-  cout<<"d_giant_inds size is:"<<d_giant_inds.size()<<endl;
-
-  // 合并 d_giant_begins
-  for (size_t i = 0; i < N_threads; ++i)
-  {
-    // size_t current_size = d_giant_begins_t[i].size();
-    d_giant_begins.insert(d_giant_begins.end(), d_giant_begins_t[i].begin(), d_giant_begins_t[i].end());
-    // thrust::copy(d_giant_begins_t[i].begin(), d_giant_begins_t[i].end(), thrust::back_inserter(d_giant_begins));
-  }
-  cout<<"d_giant_begins size is:"<<d_giant_begins.size()<<endl;
-
-  // 合并 d_giant_ends
-  for (size_t i = 0; i < N_threads; ++i)
-  {
-    d_giant_ends.insert(d_giant_ends.end(), d_giant_ends_t[i].begin(), d_giant_ends_t[i].end());
-    // size_t current_size = d_giant_ends_t[i].size();
-    // thrust::copy(d_giant_ends_t[i].begin(), d_giant_ends_t[i].end(), thrust::back_inserter(d_giant_ends));
-  }
-  cout<<"d_giant_ends size is:"<<d_giant_ends.size()<<endl;
-
+  cout << "d_giant_peaks size is:" << d_giant_peaks.size() << endl;
   // 清理 CUDA 流和锁页内存
   for (auto &stream : streams)
   {
@@ -933,7 +903,7 @@ hd_error hd_execute(hd_pipeline pl,
   ConstRawCandidates *const_d_giants = (ConstRawCandidates *)&d_giants;
 
   hd_size label_count;
-   checkThrust("label_candidate_cluster");
+  checkThrust("label_candidate_cluster");
   error = label_candidate_clusters(giant_count,
                                    *const_d_giants,
                                    pl->params.cand_sep_time,
