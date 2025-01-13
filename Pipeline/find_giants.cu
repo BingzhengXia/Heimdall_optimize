@@ -23,7 +23,11 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/discard_iterator.h>
 
+#if THRUST_VERSION < 100700
 #include <thrust/iterator/retag.h>
+#else
+#include <thrust/system/cuda/execution_policy.h>
+#endif
 
 
 // Global instance of the custom temporary memory allocator for Thrust
@@ -31,7 +35,7 @@
 //         the application to ensure memory is freed before the underlying
 //         device backend (e.g., CUDART) goes out of scope. Not sure exactly
 //         where to put it though.
-cached_allocator g_allocator;
+
 
 template<typename T>
 struct greater_than_val : public thrust::unary_function<T, bool> {
@@ -77,6 +81,7 @@ struct plus_one : public thrust::unary_function<T,T> {
 };
 
 class GiantFinder_impl {
+  cached_allocator g_allocator;
   thrust::device_vector<hd_float> d_giant_data;
   thrust::device_vector<hd_size>  d_giant_data_inds;
   thrust::device_vector<int>      d_giant_data_segments;
@@ -118,9 +123,15 @@ public:
     //       This turns out to be critical to performance!
     
     // Quickly count how much giant data there is so we know the space needed
+#if THRUST_VERSION < 100700
     hd_size giant_data_count = thrust::count_if(thrust::retag<my_tag>(d_data_begin),
                                                 thrust::retag<my_tag>(d_data_end),
                                                 greater_than_val<hd_float>(thresh));
+#else
+    hd_size giant_data_count = thrust::count_if(thrust::cuda::par(g_allocator),
+                                                d_data_begin, d_data_end,
+                                                greater_than_val<hd_float>(thresh));
+#endif
     //std::cout << "GIANT_DATA_COUNT = " << giant_data_count << std::endl;
     // We can bail early if there are no giants at all
     if( 0 == giant_data_count ) {
@@ -151,6 +162,7 @@ public:
     timer.start();
 #endif
   
+#if THRUST_VERSION < 100700
     hd_size giant_data_count2 = 
       copy_if(make_zip_iterator(make_tuple(thrust::retag<my_tag>(d_data_begin),
                                            make_counting_iterator(0u))),
@@ -162,6 +174,20 @@ public:
               greater_than_val<hd_float>(thresh))
       - make_zip_iterator(make_tuple(thrust::retag<my_tag>(d_giant_data.begin()),
                                      thrust::retag<my_tag>(d_giant_data_inds.begin())));
+#else
+    hd_size giant_data_count2 = 
+      copy_if(thrust::cuda::par(g_allocator),
+              make_zip_iterator(make_tuple(d_data_begin,
+                                           make_counting_iterator(0u))),
+              make_zip_iterator(make_tuple(d_data_begin,
+                                           make_counting_iterator(0u)))+count,
+              (d_data_begin), // the stencil
+              make_zip_iterator(make_tuple(d_giant_data.begin(),
+                                           d_giant_data_inds.begin())),
+              greater_than_val<hd_float>(thresh))
+      - make_zip_iterator(make_tuple(d_giant_data.begin(),
+                                     d_giant_data_inds.begin()));
+#endif
   
 #ifdef PRINT_BENCHMARKS
     cudaThreadSynchronize();
@@ -175,10 +201,18 @@ public:
     // Create an array of head flags indicating candidate segments
     //thrust::device_vector<int> d_giant_data_segments(giant_data_count);
     d_giant_data_segments.resize(giant_data_count);
+#if THRUST_VERSION < 100700
     thrust::adjacent_difference(thrust::retag<my_tag>(d_giant_data_inds.begin()),
                                 thrust::retag<my_tag>(d_giant_data_inds.end()),
                                 thrust::retag<my_tag>(d_giant_data_segments.begin()),
                                 not_nearby<hd_size>(merge_dist));
+#else
+    thrust::adjacent_difference(thrust::cuda::par(g_allocator),
+                                d_giant_data_inds.begin(),
+                                d_giant_data_inds.end(),
+                                d_giant_data_segments.begin(),
+                                not_nearby<hd_size>(merge_dist));
+#endif
   
     //hd_size giant_count_quick = thrust::count(d_giant_data_segments.begin(),
     //                                          d_giant_data_segments.end(),
@@ -193,9 +227,16 @@ public:
     //thrust::device_vector<hd_size> d_giant_data_seg_ids(d_giant_data_segments.size());
     d_giant_data_seg_ids.resize(d_giant_data_segments.size());
     
+#if THRUST_VERSION < 100700
     thrust::inclusive_scan(thrust::retag<my_tag>(d_giant_data_segments.begin()),
                            thrust::retag<my_tag>(d_giant_data_segments.end()),
                            thrust::retag<my_tag>(d_giant_data_seg_ids.begin()));
+#else
+    thrust::inclusive_scan(thrust::cuda::par(g_allocator),
+                           d_giant_data_segments.begin(),
+                           d_giant_data_segments.end(),
+                           d_giant_data_seg_ids.begin());
+#endif
   
     // We extract the number of giants from the end of the exclusive scan
     //hd_size giant_count = d_giant_data_seg_ids.back() +
@@ -238,6 +279,7 @@ public:
     
   
     // Now we find the value (snr) and location (time) of each giant's maximum
+#if THRUST_VERSION < 100700
     hd_size giant_count2 = 
       reduce_by_key(thrust::retag<my_tag>(d_giant_data_inds.begin()), // the keys
                     thrust::retag<my_tag>(d_giant_data_inds.end()),
@@ -250,6 +292,21 @@ public:
                     maximum_first<thrust::tuple<hd_float,hd_size> >())
       .second - make_zip_iterator(make_tuple(thrust::retag<my_tag>(new_giant_peaks_begin),
                                              thrust::retag<my_tag>(new_giant_inds_begin)));
+#else
+    hd_size giant_count2 = 
+      reduce_by_key(thrust::cuda::par(g_allocator),
+                    d_giant_data_inds.begin(), // the keys
+                    d_giant_data_inds.end(),
+                    make_zip_iterator(make_tuple(d_giant_data.begin(),
+                                                 d_giant_data_inds.begin())),
+                    thrust::make_discard_iterator(), // the keys output
+                    make_zip_iterator(make_tuple(new_giant_peaks_begin,
+                                                 new_giant_inds_begin)),
+                    nearby<hd_size>(merge_dist),
+                    maximum_first<thrust::tuple<hd_float,hd_size> >())
+      .second - make_zip_iterator(make_tuple(new_giant_peaks_begin,
+                                             new_giant_inds_begin));
+#endif
   
 #ifdef PRINT_BENCHMARKS
     cudaThreadSynchronize();

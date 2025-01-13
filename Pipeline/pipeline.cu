@@ -80,7 +80,8 @@ void stop_timer(Stopwatch &timer) {}
 template <typename T, typename U>
 std::pair<T &, U &> tie(T &a, U &b) { return std::pair<T &, U &>(a, b); }
 
-const int N_threads = 8; // 设置流的数目
+static const int N_threads = 8; // set thread number
+static const int gpu_idx = 4;//set GPU id
 #define THRUST_DEBUG 1
 
 struct hd_pipeline_t
@@ -111,7 +112,9 @@ hd_error allocate_gpu(const hd_pipeline pl)
   // MPI_Comm comm = pl->communicator;
   // MPI_Comm_rank(comm, &proc_idx);
   int proc_idx = pl->params.beam;
-  int gpu_idx = pl->params.gpu_id;
+  // int gpu_idx = pl->params.gpu_id;\
+  //for test
+  
 
   cudaError_t cerror = cudaSetDevice(gpu_idx);
   if (cerror != cudaSuccess)
@@ -470,10 +473,7 @@ hd_error hd_execute(hd_pipeline pl,
     pl->d_filtered_series[i].resize(series_stride, 0);
   }
 
-  // cudaMalloc(&d_time_series, series_stride * sizeof(hd_float) * N_threads);
-  // cudaMalloc(&d_filtered_series, series_stride * sizeof(hd_float) * N_threads);
-
-  stop_timer(memory_timer);
+  
   std::vector<RemoveBaselinePlan> baseline_removers(N_threads);
   std::vector<GetRMSPlan> rms_getters(N_threads);
   std::vector<MatchedFilterPlan<hd_float>> matched_filter_plans(N_threads);
@@ -491,16 +491,10 @@ hd_error hd_execute(hd_pipeline pl,
   std::vector<thrust::device_vector<hd_size>> d_giant_filter_inds_t(N_threads);
   std::vector<thrust::device_vector<hd_size>> d_giant_dm_inds_t(N_threads);
   std::vector<thrust::device_vector<hd_size>> d_giant_members_t(N_threads);
-  // thrust::device_vector<hd_float> d_giant_peaks;
-  // thrust::device_vector<hd_size> d_giant_inds;
-  // thrust::device_vector<hd_size> d_giant_begins;
-  // thrust::device_vector<hd_size> d_giant_ends;
-  // thrust::device_vector<hd_size> d_giant_filter_inds;
-  // thrust::device_vector<hd_size> d_giant_dm_inds;
-  // thrust::device_vector<hd_size> d_giant_members;
 
   typedef thrust::device_ptr<hd_float> dev_float_ptr;
   typedef thrust::device_ptr<hd_size> dev_size_ptr;
+  stop_timer(memory_timer);
 
   if (pl->params.verbosity >= 2)
   {
@@ -570,11 +564,14 @@ hd_error hd_execute(hd_pipeline pl,
   //   CHECK(cudaStreamCreate(&streams[i]));
   // }
   // #pragma omp parallel
+  hd_byte *d_dm_series;
+  CHECK(cudaMalloc(&d_dm_series, pl->h_dm_series.size() * sizeof(hd_byte)));
+  CHECK(cudaMemcpy(d_dm_series, thrust::raw_pointer_cast(pl->h_dm_series.data()), pl->h_dm_series.size() * sizeof(hd_byte), cudaMemcpyHostToDevice));
   start_timer(DSPT_timer);
   omp_set_num_threads(N_threads);
 #pragma omp parallel
   {
-
+    CHECK(cudaSetDevice(gpu_idx));
     unsigned int num_threads = omp_get_num_threads();
     int tid = omp_get_thread_num();
     // cudaStream_t stream = streams[tid];
@@ -611,21 +608,21 @@ hd_error hd_execute(hd_pipeline pl,
       {
       case 8:
         CHECK(cudaMemcpy(time_series,
-                              &pl->h_dm_series[offset],
+                              &d_dm_series[offset],
                               cur_nsamps * sizeof(dedisp_byte),
-                              cudaMemcpyHostToDevice));
+                              cudaMemcpyDeviceToDevice));
         break;
       case 16:
         CHECK(cudaMemcpy(time_series,
-                              reinterpret_cast<unsigned short *>(&pl->h_dm_series[offset]),
+                              reinterpret_cast<unsigned short *>(&d_dm_series[offset]),
                               cur_nsamps * sizeof(unsigned short),
-                              cudaMemcpyHostToDevice));
+                              cudaMemcpyDeviceToDevice));
         break;
       case 32:
         CHECK(cudaMemcpy(time_series,
-                              reinterpret_cast<float *>(&pl->h_dm_series[offset]),
+                              reinterpret_cast<float *>(&d_dm_series[offset]),
                               cur_nsamps * sizeof(float),
-                              cudaMemcpyHostToDevice));
+                              cudaMemcpyDeviceToDevice));
         break;
       default:
         break;
@@ -763,7 +760,7 @@ hd_error hd_execute(hd_pipeline pl,
           // stop_timer(filter_timer);
           hd_size prev_giant_count = d_giant_peaks_t[tid].size();
 
-          // start_timer(giants_timer);
+          start_timer(giants_timer);
          
           // #pragma omp critical
           error = giant_finders[tid].exec(filtered_series, cur_nsamps_filtered,
@@ -829,8 +826,8 @@ hd_error hd_execute(hd_pipeline pl,
 #pragma omp barrier
 
   printf("thread complete!\n");
-  cout << "DSPT time:          " << DSPT_timer.getTime() << endl;
   stop_timer(DSPT_timer);
+  cout << "loop time:          " << DSPT_timer.getTime() << endl;
   for (size_t i = 0; i < N_threads; ++i)
   {
     cout << "thread " << i << " grint indx size is:" << d_giant_inds_t[i].size() << endl;
