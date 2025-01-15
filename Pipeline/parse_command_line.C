@@ -147,6 +147,9 @@ int hd_parse_command_line(int argc, char* argv[], hd_params* params)
       params->channel_zaps[izap].start = atoi(argv[++i]);
       params->channel_zaps[izap].end   = atoi(argv[++i]);
     }
+    else if( argv[i] == string("-t") ) {
+      sscanf(argv[++i], "%d", &(params->num_threads));
+    }
     else {
       cerr << "WARNING: Unknown parameter '" << argv[i] << "'" << endl;
     }
@@ -197,4 +200,6 @@ void hd_print_usage()
   cout << "    -fswap                   swap channel ordering for negative DM - SIGPROC 2,4 or 8 bit only" << endl;
   cout << "    -boxcar_renorm           renormalise the boxcar filtered timeseries instead of rescale" << endl;
   cout << "    -min_tscrunch_width num  vary between high quality (large value) and high performance (low value)" << endl;
+  cout << "    -t num  set number of thread and stream" << endl;
+  
 }

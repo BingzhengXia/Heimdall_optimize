@@ -67,4 +67,6 @@ void hd_set_default_params(hd_params* params) {
 	params->utc_start = 0;
 	params->spectra_per_second = 0;
 	params->output_dir = ".";
+
+	params->num_threads = 1;
 }

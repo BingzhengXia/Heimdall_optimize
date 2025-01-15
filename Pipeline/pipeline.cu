@@ -80,7 +80,7 @@ void stop_timer(Stopwatch &timer) {}
 template <typename T, typename U>
 std::pair<T &, U &> tie(T &a, U &b) { return std::pair<T &, U &>(a, b); }
 
-static const int N_threads = 8; // set thread number
+
 static const int gpu_idx = 4;//set GPU id
 #define THRUST_DEBUG 1
 
@@ -296,7 +296,7 @@ hd_error hd_execute(hd_pipeline pl,
   Stopwatch giants_timer;
   Stopwatch candidates_timer;
   Stopwatch DSPT_timer;
-
+  const unsigned int N_threads = pl->params.num_threads; // set thread number
   start_timer(total_timer);
 
   start_timer(clean_timer);
