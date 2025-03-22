@@ -1,139 +1,105 @@
-/***************************************************************************
- *
- *   Copyright (C) 2012 by Ben Barsdell and Andrew Jameson
- *   Licensed under the Academic Free License version 2.1
- *
- ***************************************************************************/
 
 #pragma once
 
 #include <thrust/system/cuda/vector.h>
 
 #include <map>
+#include <unordered_map>
 #include <stdexcept>
 
 #include <iostream>
+#include <mutex>
+#include <thread>
+#include <vector>
+#include <sstream>
 
-/*
-  This was copied from Thrust's custom_temporary_allocation example.
- */
 
-// cached_allocator: a simple allocator for caching allocation requests
+struct not_my_pointer : public std::exception
+{
+    explicit not_my_pointer(void *p)
+    {
+        std::stringstream s;
+        s << "Pointer" << p << " was not allocated by this allocator.";
+        message = s.str();
+    }
+    virtual ~not_my_pointer() noexcept {}
+    virtual const char *what() const noexcept override
+    {
+        return message.c_str();
+    }
+
+private:
+    std::string message;
+};
 struct cached_allocator
 {
-  typedef char value_type;
-  cached_allocator() {}
-
-  char *allocate(std::ptrdiff_t num_bytes)
-  {
-	  //std::cout << "cached_allocator::allocate()" << std::endl;
-	  
-    char *result = 0;
-
-    // search the cache for a free block
-    free_blocks_type::iterator free_block = free_blocks.find(num_bytes);
-
-    if(free_block != free_blocks.end())
+    typedef char value_type;
+    cached_allocator() {}
+    ~cached_allocator()
     {
-	    //std::cout << "cached_allocator::allocator(): found a hit" << std::endl;
-
-      // get the pointer
-      result = free_block->second;
-
-      // erase from the free_blocks map
-      free_blocks.erase(free_block);
+        free_all();
     }
-    else
+    char *allocate(std::ptrdiff_t num_bytes)
     {
-      // no allocation of the right size exists
-      // create a new one with cuda::malloc
-      // throw if cuda::malloc can't satisfy the request
-      try
-      {
-	      //std::cout << "cached_allocator::allocator(): no free block found; calling cuda::malloc" << std::endl;
-
-        // allocate memory and convert cuda::pointer to raw pointer
-        result = thrust::system::cuda::malloc<char>(num_bytes).get();
-      }
-      catch(std::runtime_error &e)
-      {
-        throw;
-      }
+        char *result = nullptr;
+        // 从空闲块队列中寻找合适的块
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = free_blocks.find(num_bytes);
+        if (it != free_blocks.end() && !it->second.empty())
+        {
+            result = it->second.back();
+            it->second.pop_back();
+            if (it->second.empty())
+                free_blocks.erase(it);
+        }
+        else
+        {
+            // 没有找到合适大小的缓存块，申请新内存
+            if (cudaMalloc((void **)&result, num_bytes) != cudaSuccess)
+            {
+                throw std::runtime_error("cudaMalloc failed");
+            }
+        }
+        // 记录已分配的块
+        allocated_blocks[result] = num_bytes;
+        return result;
     }
 
-    // insert the allocated pointer into the allocated_blocks map
-    allocated_blocks.insert(std::make_pair(result, num_bytes));
-
-    return result;
-  }
-
-  void deallocate(char *ptr, size_t n)
-  {
-    // erase the allocated block from the allocated blocks map
-    allocated_blocks_type::iterator iter = allocated_blocks.find(ptr);
-    std::ptrdiff_t num_bytes = iter->second;
-    allocated_blocks.erase(iter);
-
-    // insert the block into the free blocks map
-    free_blocks.insert(std::make_pair(num_bytes, ptr));
-  }
-
-  void free_all()
-  {
-	  //std::cout << "cached_allocator::free_all(): cleaning up after ourselves..." << std::endl;
-
-    // deallocate all outstanding blocks in both lists
-    for(free_blocks_type::iterator i = free_blocks.begin();
-        i != free_blocks.end();
-        ++i)
+    void deallocate(char *ptr, size_t)
     {
-      // transform the pointer to cuda::pointer before calling cuda::free
-      thrust::system::cuda::free(thrust::system::cuda::pointer<char>(i->second));
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = allocated_blocks.find(ptr);
+        if (it == allocated_blocks.end())
+        {
+            throw not_my_pointer(reinterpret_cast<void *>(ptr));
+        }
+        std::ptrdiff_t num_bytes = it->second;
+        allocated_blocks.erase(it);
+
+        // 将释放的内存块加入空闲队列
+        free_blocks[num_bytes].push_back(ptr);
     }
 
-    for(allocated_blocks_type::iterator i = allocated_blocks.begin();
-        i != allocated_blocks.end();
-        ++i)
+private:
+    std::unordered_map<std::ptrdiff_t, std::vector<char *>> free_blocks; // 按大小记录空闲块
+    std::unordered_map<char *, std::ptrdiff_t> allocated_blocks;         // 记录已分配块
+    std::mutex mutex_;
+    void free_all()
     {
-      // transform the pointer to cuda::pointer before calling cuda::free
-      thrust::system::cuda::free(thrust::system::cuda::pointer<char>(i->first));
+        // 释放空闲块队列和已分配块队列
+        for (auto &pair : free_blocks)
+        {
+            for (char *ptr : pair.second)
+            {
+                cudaFree(ptr);
+            }
+        }
+        free_blocks.clear();
+
+        for (auto &pair : allocated_blocks)
+        {
+            cudaFree(pair.first);
+        }
+        allocated_blocks.clear();
     }
-  }
-
-  typedef std::multimap<std::ptrdiff_t, char*> free_blocks_type;
-  typedef std::map<char *, std::ptrdiff_t>     allocated_blocks_type;
-
-  free_blocks_type      free_blocks;
-  allocated_blocks_type allocated_blocks;
 };
-
-// Global instance of custom allocator
-extern cached_allocator g_allocator;
-
-// Tag for custom memory allocator in Thrust calls
-struct my_tag : thrust::system::cuda::tag {};
-
-// overload get_temporary_buffer on my_tag
-// its job is to forward allocation requests to g_allocator
-template<typename T>
-  thrust::pair<T*, std::ptrdiff_t>
-    get_temporary_buffer(my_tag, std::ptrdiff_t n)
-{
-	//std::cout << "get_temporary_buffer" << std::endl;
-  // ask the allocator for sizeof(T) * n bytes
-  T* result = reinterpret_cast<T*>(g_allocator.allocate(sizeof(T) * n));
-
-  // return the pointer and the number of elements allocated
-  return thrust::make_pair(result,n);
-}
-// overload return_temporary_buffer on my_tag
-// its job is to forward deallocations to g_allocator
-// an overloaded return_temporary_buffer should always accompany
-// an overloaded get_temporary_buffer
-template<typename Pointer>
-  void return_temporary_buffer(my_tag, Pointer p)
-{
-	//std::cout << "return_temporary_buffer" << std::endl;
-  // return the pointer to the allocator
-  g_allocator.deallocate(thrust::raw_pointer_cast(p), 0);
-}
