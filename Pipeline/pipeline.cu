@@ -80,8 +80,7 @@ void stop_timer(Stopwatch &timer) {}
 template <typename T, typename U>
 std::pair<T &, U &> tie(T &a, U &b) { return std::pair<T &, U &>(a, b); }
 
-
-static const int gpu_idx = 4;//set GPU id
+static const int gpu_idx = 4; // set GPU id
 #define THRUST_DEBUG 1
 
 struct hd_pipeline_t
@@ -92,7 +91,8 @@ struct hd_pipeline_t
   // const int N_threads = 1;
 
   // Memory buffers used during pipeline execution
-  std::vector<hd_byte> h_clean_filterbank;
+  // std::vector<hd_byte> h_clean_filterbank;
+  device_vector<hd_byte> h_clean_filterbank;
   host_vector<hd_byte> h_dm_series;
 
   std::vector<device_vector<hd_float>> d_time_series;
@@ -114,7 +114,6 @@ hd_error allocate_gpu(const hd_pipeline pl)
   int proc_idx = pl->params.beam;
   // int gpu_idx = pl->params.gpu_id;\
   //for test
-  
 
   cudaError_t cerror = cudaSetDevice(gpu_idx);
   if (cerror != cudaSuccess)
@@ -330,7 +329,7 @@ hd_error hd_execute(hd_pipeline pl,
                                &h_filterbank[0],
                                nsamps,
                                nbits,
-                               &pl->h_clean_filterbank[0],
+                               thrust::raw_pointer_cast( pl->h_clean_filterbank.data()),
                                &h_killmask[0],
                                cleaning_dm,
                                pl->params.dt,
@@ -473,7 +472,6 @@ hd_error hd_execute(hd_pipeline pl,
     pl->d_filtered_series[i].resize(series_stride, 0);
   }
 
-  
   std::vector<RemoveBaselinePlan> baseline_removers(N_threads);
   std::vector<GetRMSPlan> rms_getters(N_threads);
   std::vector<MatchedFilterPlan<hd_float>> matched_filter_plans(N_threads);
@@ -503,19 +501,30 @@ hd_error hd_execute(hd_pipeline pl,
   }
 
   // Dedisperse
+  hd_byte *d_dm_series;
+  CHECK(cudaMalloc(&d_dm_series, pl->h_dm_series.size() * sizeof(hd_byte)));
   dedisp_error derror;
-  const dedisp_byte *in = &pl->h_clean_filterbank[0];
-  dedisp_byte *out = &pl->h_dm_series[0];
+  // const dedisp_byte *in = &pl->h_clean_filterbank[0];
+  const dedisp_byte *in = thrust::raw_pointer_cast (pl->h_clean_filterbank.data());
+  // dedisp_byte *out = &pl->h_dm_series[0];
+  dedisp_byte *out = d_dm_series;
   dedisp_size in_nbits = nbits;
   dedisp_size in_stride = pl->params.nchans * in_nbits / 8;
   dedisp_size out_nbits = pl->params.dm_nbits;
   dedisp_size out_stride = series_stride * out_nbits / 8;
-  unsigned flags = 0;
+  unsigned flags = DEDISP_DEVICE_POINTERS;
+
   start_timer(dedisp_timer);
   derror = dedisp_execute_adv(pl->dedispersion_plan, nsamps,
                               in, in_nbits, in_stride,
-                              out, out_nbits, out_stride,
+                              d_dm_series, out_nbits, out_stride,
                               flags);
+  if (derror != DEDISP_NO_ERROR)
+  {
+    printf("\nERROR: Failed to execute dedispersion plan: %s\n",
+           dedisp_get_error_string(derror));
+    return -1;
+  }
   // 执行去分散操作，将输入的滤波信号转换为去分散后的信号
   // dedisp_error derror = dedisp_execute_adv(pl->dedispersion_plan, nsamps,
   //                                          pl->h_clean_filterbank.data(), // 输入滤波后的原始信号
@@ -564,9 +573,8 @@ hd_error hd_execute(hd_pipeline pl,
   //   CHECK(cudaStreamCreate(&streams[i]));
   // }
   // #pragma omp parallel
-  hd_byte *d_dm_series;
-  CHECK(cudaMalloc(&d_dm_series, pl->h_dm_series.size() * sizeof(hd_byte)));
-  CHECK(cudaMemcpy(d_dm_series, thrust::raw_pointer_cast(pl->h_dm_series.data()), pl->h_dm_series.size() * sizeof(hd_byte), cudaMemcpyHostToDevice));
+
+  // CHECK(cudaMemcpy(d_dm_series, thrust::raw_pointer_cast(pl->h_dm_series.data()), pl->h_dm_series.size() * sizeof(hd_byte), cudaMemcpyHostToDevice));
   start_timer(DSPT_timer);
   omp_set_num_threads(N_threads);
 #pragma omp parallel
@@ -595,9 +603,9 @@ hd_error hd_execute(hd_pipeline pl,
         cout << "\tBaselining and normalising each beam..." << endl;
       }
       // 每个线程使用不同的缓冲区位置
-     
+
       hd_float *time_series = thrust::raw_pointer_cast(pl->d_time_series[tid].data());
-      
+
       // printf("dm_idx = %d, tid = %d\n", dm_idx, tid);
 
       // 偏移量计算
@@ -608,21 +616,21 @@ hd_error hd_execute(hd_pipeline pl,
       {
       case 8:
         CHECK(cudaMemcpy(time_series,
-                              &d_dm_series[offset],
-                              cur_nsamps * sizeof(dedisp_byte),
-                              cudaMemcpyDeviceToDevice));
+                         &d_dm_series[offset],
+                         cur_nsamps * sizeof(dedisp_byte),
+                         cudaMemcpyDeviceToDevice));
         break;
       case 16:
         CHECK(cudaMemcpy(time_series,
-                              reinterpret_cast<unsigned short *>(&d_dm_series[offset]),
-                              cur_nsamps * sizeof(unsigned short),
-                              cudaMemcpyDeviceToDevice));
+                         reinterpret_cast<unsigned short *>(&d_dm_series[offset]),
+                         cur_nsamps * sizeof(unsigned short),
+                         cudaMemcpyDeviceToDevice));
         break;
       case 32:
         CHECK(cudaMemcpy(time_series,
-                              reinterpret_cast<float *>(&d_dm_series[offset]),
-                              cur_nsamps * sizeof(float),
-                              cudaMemcpyDeviceToDevice));
+                         reinterpret_cast<float *>(&d_dm_series[offset]),
+                         cur_nsamps * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
         break;
       default:
         break;
@@ -632,30 +640,30 @@ hd_error hd_execute(hd_pipeline pl,
 
       // 后续处理：基线移除、归一化、匹配滤波和巨脉冲检测
       hd_size nsamps_smooth = hd_size(pl->params.baseline_length / (2 * cur_dt));
-     
-// #pragma omp critical
+
+      // #pragma omp critical
       error = baseline_removers[tid].exec(time_series, cur_nsamps, nsamps_smooth);
-      
+
       if (pl->params.verbosity >= 2)
         printf("baseline_remover\n");
       // if (error != HD_NO_ERROR)
       // {
       //   return throw_error(error);
       // }
-     
-// #pragma omp critical
-//       {
-        hd_float rms = rms_getters[tid].exec(time_series, cur_nsamps);
-      
-        if (pl->params.verbosity >= 2)
-          printf("rms\n");
-      
-        thrust::transform(
-                          pl->d_time_series[tid].begin(), pl->d_time_series[tid].end(),
-                          thrust::make_constant_iterator(1.0 / rms),
-                          pl->d_time_series[tid].begin(),
-                          thrust::multiplies<hd_float>());
-       
+
+      // #pragma omp critical
+      //       {
+      hd_float rms = rms_getters[tid].exec(time_series, cur_nsamps);
+
+      if (pl->params.verbosity >= 2)
+        printf("rms\n");
+
+      thrust::transform(
+          pl->d_time_series[tid].begin(), pl->d_time_series[tid].end(),
+          thrust::make_constant_iterator(1.0 / rms),
+          pl->d_time_series[tid].begin(),
+          thrust::multiplies<hd_float>());
+
       // }
       // CHECK(cudaStreamSynchronize(stream));
 
@@ -664,159 +672,152 @@ hd_error hd_execute(hd_pipeline pl,
       hd_size rel_boxcar_max = pl->params.boxcar_max / cur_dm_scrunch;
       hd_size max_nsamps_filtered = cur_nsamps + 1 - rel_boxcar_max;
       hd_size cur_filtered_offset = rel_boxcar_max / 2;
-     
 
-// #pragma omp critical
-//       {
+      // #pragma omp critical
+      //       {
 
-        matched_filter_plans[tid].prep(time_series, cur_nsamps, rel_boxcar_max);
-    
+      matched_filter_plans[tid].prep(time_series, cur_nsamps, rel_boxcar_max);
 
-        hd_float *filtered_series = thrust::raw_pointer_cast(pl->d_filtered_series[tid].data());
-  
+      hd_float *filtered_series = thrust::raw_pointer_cast(pl->d_filtered_series[tid].data());
+
+      if (pl->params.verbosity >= 2)
+        printf("matched_filter_plan.prep\n");
+
+      // for (hd_size filter_width = cur_dm_scrunch; filter_width <= pl->params.boxcar_max; filter_width *= 2)
+      // {
+      //   hd_size rel_filter_width = filter_width / cur_dm_scrunch;
+      //   hd_size rel_tscrunch_width = std::max(2 * rel_filter_width / std::max(pl->params.min_tscrunch_width / cur_dm_scrunch, hd_size(1)), hd_size(1));
+
+      //   matched_filter_plan.exec(filtered_series, rel_filter_width, rel_tscrunch_width);
+
+      //   hd_size cur_nsamps_filtered = (max_nsamps_filtered - 1) / rel_tscrunch_width + 1;
+      //   thrust::transform(thrust::cuda::par.on(stream),
+      //                     thrust::device_pointer_cast(filtered_series),
+      //                     thrust::device_pointer_cast(filtered_series + cur_nsamps_filtered),
+      //                     thrust::make_constant_iterator(1.0 / sqrt(static_cast<hd_float>(rel_filter_width))),
+      //                     thrust::device_pointer_cast(filtered_series),
+      //                     thrust::multiplies<hd_float>());
+      // }
+
+      // For each boxcar filter
+      // Note: We cannot detect pulse widths < current time resolution
+      for (hd_size filter_width = cur_dm_scrunch;
+           filter_width <= pl->params.boxcar_max;
+           filter_width *= 2)
+      {
+        hd_size rel_filter_width = filter_width / cur_dm_scrunch;
+        hd_size filter_idx = get_filter_index(filter_width);
+
+        // Note: Filter width is relative to the current time resolution
+        hd_size rel_min_tscrunch_width = std::max(pl->params.min_tscrunch_width / cur_dm_scrunch,
+                                                  hd_size(1));
+        hd_size rel_tscrunch_width = std::max(2 * rel_filter_width / rel_min_tscrunch_width,
+                                              hd_size(1));
+        // Filter width relative to cur_dm_scrunch AND tscrunch
+        hd_size rel_rel_filter_width = rel_filter_width / rel_tscrunch_width;
+
+        // start_timer(filter_timer);
+
+        error = matched_filter_plans[tid].exec(filtered_series, rel_filter_width, rel_tscrunch_width);
+
         if (pl->params.verbosity >= 2)
-          printf("matched_filter_plan.prep\n");
+          printf("matched_filter_plan.exec\n");
 
-        // for (hd_size filter_width = cur_dm_scrunch; filter_width <= pl->params.boxcar_max; filter_width *= 2)
+        // if (error != HD_NO_ERROR)
         // {
-        //   hd_size rel_filter_width = filter_width / cur_dm_scrunch;
-        //   hd_size rel_tscrunch_width = std::max(2 * rel_filter_width / std::max(pl->params.min_tscrunch_width / cur_dm_scrunch, hd_size(1)), hd_size(1));
+        //   return throw_error(error);
+        // }
+        // Divide and round up
+        hd_size cur_nsamps_filtered = ((max_nsamps_filtered - 1) / rel_tscrunch_width + 1);
+        hd_size cur_scrunch = cur_dm_scrunch * rel_tscrunch_width;
 
-        //   matched_filter_plan.exec(filtered_series, rel_filter_width, rel_tscrunch_width);
+        if (pl->params.boxcar_renorm)
+        {
+          // recompute then RMS of the filtered time series, then use that for rescaling.
+          // Note that this method reduces the S/N of injected pulses. For more information
+          // see https://ui.adsabs.harvard.edu/abs/2021MNRAS.501.2316G/abstract [Appendix A]
 
-        //   hd_size cur_nsamps_filtered = (max_nsamps_filtered - 1) / rel_tscrunch_width + 1;
-        //   thrust::transform(thrust::cuda::par.on(stream),
-        //                     thrust::device_pointer_cast(filtered_series),
-        //                     thrust::device_pointer_cast(filtered_series + cur_nsamps_filtered),
-        //                     thrust::make_constant_iterator(1.0 / sqrt(static_cast<hd_float>(rel_filter_width))),
-        //                     thrust::device_pointer_cast(filtered_series),
-        //                     thrust::multiplies<hd_float>());
+          hd_float rms = rms_getters[tid].exec(filtered_series, cur_nsamps_filtered);
+
+          thrust::transform(thrust::device_ptr<hd_float>(filtered_series),
+                            thrust::device_ptr<hd_float>(filtered_series) + cur_nsamps_filtered,
+                            thrust::make_constant_iterator(hd_float(1.0) / rms),
+                            thrust::device_ptr<hd_float>(filtered_series),
+                            thrust::multiplies<hd_float>());
+        }
+        else
+        {
+          // rescale the filtered time series (RMS ~ sqrt(time))
+
+          thrust::constant_iterator<hd_float>
+              norm_val_iter(1.0 / sqrt((hd_float)rel_filter_width));
+
+          thrust::transform(thrust::device_ptr<hd_float>(filtered_series),
+                            thrust::device_ptr<hd_float>(filtered_series) + cur_nsamps_filtered,
+                            norm_val_iter,
+                            thrust::device_ptr<hd_float>(filtered_series),
+                            thrust::multiplies<hd_float>());
+        }
+
+        // stop_timer(filter_timer);
+        hd_size prev_giant_count = d_giant_peaks_t[tid].size();
+
+        start_timer(giants_timer);
+
+        // #pragma omp critical
+        error = giant_finders[tid].exec(filtered_series, cur_nsamps_filtered,
+                                        pl->params.detect_thresh,
+                                        // pl->params.cand_sep_time,
+                                        //  Note: This was MB's recommendation
+                                        pl->params.cand_sep_time * rel_rel_filter_width,
+                                        d_giant_peaks_t[tid],
+                                        d_giant_inds_t[tid],
+                                        d_giant_begins_t[tid],
+                                        d_giant_ends_t[tid]);
+
+        if (pl->params.verbosity >= 2)
+          printf("giant_finder.exec\n");
+        //           thrust::host_vector<hd_float> h_giant_inds = d_giant_inds_t[tid];  // 将设备向量拷贝到主机
+        // for (int i = 0; i < h_giant_inds.size(); ++i) {
+        //     std::cout << "h_giant_inds[" << i << "] = " << h_giant_inds[i] << std::endl;
         // }
 
-        // For each boxcar filter
-        // Note: We cannot detect pulse widths < current time resolution
-        for (hd_size filter_width = cur_dm_scrunch;
-             filter_width <= pl->params.boxcar_max;
-             filter_width *= 2)
-        {
-          hd_size rel_filter_width = filter_width / cur_dm_scrunch;
-          hd_size filter_idx = get_filter_index(filter_width);
+        // if (error != HD_NO_ERROR)
+        // {
+        //   return throw_error(error);
+        // }
 
-          // Note: Filter width is relative to the current time resolution
-          hd_size rel_min_tscrunch_width = std::max(pl->params.min_tscrunch_width / cur_dm_scrunch,
-                                                    hd_size(1));
-          hd_size rel_tscrunch_width = std::max(2 * rel_filter_width / rel_min_tscrunch_width,
-                                                hd_size(1));
-          // Filter width relative to cur_dm_scrunch AND tscrunch
-          hd_size rel_rel_filter_width = rel_filter_width / rel_tscrunch_width;
+        hd_size rel_cur_filtered_offset = (cur_filtered_offset /
+                                           rel_tscrunch_width);
 
-          // start_timer(filter_timer);
-        
+        using namespace thrust::placeholders;
 
-          error = matched_filter_plans[tid].exec(filtered_series, rel_filter_width, rel_tscrunch_width);
+        thrust::transform(d_giant_inds_t[tid].begin() + prev_giant_count,
+                          d_giant_inds_t[tid].end(),
+                          d_giant_inds_t[tid].begin() + prev_giant_count,
+                          /*first_idx +*/ (_1 + rel_cur_filtered_offset) * cur_scrunch);
 
-          if (pl->params.verbosity >= 2)
-            printf("matched_filter_plan.exec\n");
-         
+        thrust::transform(d_giant_begins_t[tid].begin() + prev_giant_count,
+                          d_giant_begins_t[tid].end(),
+                          d_giant_begins_t[tid].begin() + prev_giant_count,
+                          /*first_idx +*/ (_1 + rel_cur_filtered_offset) * cur_scrunch);
+        thrust::transform(d_giant_ends_t[tid].begin() + prev_giant_count,
+                          d_giant_ends_t[tid].end(),
+                          d_giant_ends_t[tid].begin() + prev_giant_count,
+                          /*first_idx +*/ (_1 + rel_cur_filtered_offset) * cur_scrunch);
+        // CHECK(cudaStreamSynchronize(stream));
 
-          // if (error != HD_NO_ERROR)
-          // {
-          //   return throw_error(error);
-          // }
-          // Divide and round up
-          hd_size cur_nsamps_filtered = ((max_nsamps_filtered - 1) / rel_tscrunch_width + 1);
-          hd_size cur_scrunch = cur_dm_scrunch * rel_tscrunch_width;
+        // #pragma omp critical
+        // {
+        d_giant_filter_inds_t[tid].resize(d_giant_peaks_t[tid].size(), filter_idx);
+        d_giant_dm_inds_t[tid].resize(d_giant_peaks_t[tid].size(), dm_idx);
+        // Note: This could be used to track total member samples if desired
+        d_giant_members_t[tid].resize(d_giant_peaks_t[tid].size(), 1);
 
-          if (pl->params.boxcar_renorm)
-          {
-            // recompute then RMS of the filtered time series, then use that for rescaling.
-            // Note that this method reduces the S/N of injected pulses. For more information
-            // see https://ui.adsabs.harvard.edu/abs/2021MNRAS.501.2316G/abstract [Appendix A]
+        // }
 
-            hd_float rms = rms_getters[tid].exec(filtered_series, cur_nsamps_filtered);
-            
-            thrust::transform( thrust::device_ptr<hd_float>(filtered_series),
-                              thrust::device_ptr<hd_float>(filtered_series) + cur_nsamps_filtered,
-                              thrust::make_constant_iterator(hd_float(1.0) / rms),
-                              thrust::device_ptr<hd_float>(filtered_series),
-                              thrust::multiplies<hd_float>());
-           
-          }
-          else
-          {
-            // rescale the filtered time series (RMS ~ sqrt(time))
-        
-            thrust::constant_iterator<hd_float>
-                norm_val_iter(1.0 / sqrt((hd_float)rel_filter_width));
-          
-            thrust::transform( thrust::device_ptr<hd_float>(filtered_series),
-                              thrust::device_ptr<hd_float>(filtered_series) + cur_nsamps_filtered,
-                              norm_val_iter,
-                              thrust::device_ptr<hd_float>(filtered_series),
-                              thrust::multiplies<hd_float>());
-           
-          }
-
-          // stop_timer(filter_timer);
-          hd_size prev_giant_count = d_giant_peaks_t[tid].size();
-
-          start_timer(giants_timer);
-         
-          // #pragma omp critical
-          error = giant_finders[tid].exec(filtered_series, cur_nsamps_filtered,
-                                    pl->params.detect_thresh,
-                                    // pl->params.cand_sep_time,
-                                    //  Note: This was MB's recommendation
-                                    pl->params.cand_sep_time * rel_rel_filter_width,
-                                    d_giant_peaks_t[tid],
-                                    d_giant_inds_t[tid],
-                                    d_giant_begins_t[tid],
-                                    d_giant_ends_t[tid]);
-
-          
-          if (pl->params.verbosity >= 2)
-            printf("giant_finder.exec\n");
-          //           thrust::host_vector<hd_float> h_giant_inds = d_giant_inds_t[tid];  // 将设备向量拷贝到主机
-          // for (int i = 0; i < h_giant_inds.size(); ++i) {
-          //     std::cout << "h_giant_inds[" << i << "] = " << h_giant_inds[i] << std::endl;
-          // }
-
-          // if (error != HD_NO_ERROR)
-          // {
-          //   return throw_error(error);
-          // }
-
-          hd_size rel_cur_filtered_offset = (cur_filtered_offset /
-                                             rel_tscrunch_width);
-
-          using namespace thrust::placeholders;
-          
-          thrust::transform( d_giant_inds_t[tid].begin() + prev_giant_count,
-                            d_giant_inds_t[tid].end(),
-                            d_giant_inds_t[tid].begin() + prev_giant_count,
-                            /*first_idx +*/ (_1 + rel_cur_filtered_offset) * cur_scrunch);
-
-          thrust::transform(d_giant_begins_t[tid].begin() + prev_giant_count,
-                            d_giant_begins_t[tid].end(),
-                            d_giant_begins_t[tid].begin() + prev_giant_count,
-                            /*first_idx +*/ (_1 + rel_cur_filtered_offset) * cur_scrunch);
-          thrust::transform( d_giant_ends_t[tid].begin() + prev_giant_count,
-                            d_giant_ends_t[tid].end(),
-                            d_giant_ends_t[tid].begin() + prev_giant_count,
-                            /*first_idx +*/ (_1 + rel_cur_filtered_offset) * cur_scrunch);
-          // CHECK(cudaStreamSynchronize(stream));
-        
-          // #pragma omp critical
-          // {
-          d_giant_filter_inds_t[tid].resize(d_giant_peaks_t[tid].size(), filter_idx);
-          d_giant_dm_inds_t[tid].resize(d_giant_peaks_t[tid].size(), dm_idx);
-          // Note: This could be used to track total member samples if desired
-          d_giant_members_t[tid].resize(d_giant_peaks_t[tid].size(), 1);
-        
-          // }
-
-          stop_timer(giants_timer);
-        } // End of filter width loop
+        stop_timer(giants_timer);
+      } // End of filter width loop
       // }
       // printf("end of filter loop\n");
     } // DMs for each thread
