@@ -27,9 +27,12 @@
  #endif
  
  #include "hd/stopwatch.h"
+ #include <chrono>
  
  int main(int argc, char* argv[]) 
  {
+   auto start = std::chrono::high_resolution_clock::now();
+   auto pre_s = std::chrono::high_resolution_clock::now();
    hd_params params;
    hd_set_default_params(&params);
    int ok = hd_parse_command_line(argc, argv, &params);
@@ -127,9 +130,13 @@
    std::vector<hd_byte> filterbank(filterbank_bytes);
    
    bool stop_requested = false;
+   auto pre_e = std::chrono::high_resolution_clock::now();
+   std::chrono::duration<double> pre_time = pre_e - pre_s;
+   cout<< "pre time: "<< pre_time.count() << endl;
    
    // Create the pipeline object
    // --------------------------
+   auto pip_create_s = std::chrono::high_resolution_clock::now();
    hd_pipeline pipeline;
    hd_error error;
    error = hd_create_pipeline(&pipeline, params);
@@ -143,10 +150,14 @@
    if( params.verbosity >= 1 ) {
      cout << "Beginning data processing, requesting " << nsamps_gulp << " samples" << endl;
    }
+   auto pip_create_e = std::chrono::high_resolution_clock::now();
+   std::chrono::duration<double> pip_create_time = pip_create_e - pip_create_s;
+   cout<< "pipeline create time: "<< pip_create_time.count() << endl;
  
  
    // start a timer for the whole pipeline
    //Stopwatch pipeline_timer;
+   auto pipeline_s = std::chrono::high_resolution_clock::now();
  
    size_t total_nsamps = 0;
    size_t nsamps_read = data_source->get_data (nsamps_gulp, (char*)&filterbank[0]);
@@ -245,6 +256,9 @@
      }
      total_nsamps += nsamps_processed;
    }
+   auto pipeline_e = std::chrono::high_resolution_clock::now();
+   std::chrono::duration<double> pipeline_time = pipeline_e - pipeline_s;
+   cout<< "pipeline time: "<< pipeline_time.count() << endl;
     
    if( params.verbosity >= 1 ) {
      cout << "Successfully processed a total of " << total_nsamps
@@ -260,4 +274,8 @@
    if( params.verbosity >= 1 ) {
      cout << "All done." << endl;
    }
+   auto end = std::chrono::high_resolution_clock::now();
+   std::chrono::duration<double> elapsed = end - start;
+   cout<<"Total time taken: "<<elapsed.count()<<" seconds"<<endl;
  }
+ 

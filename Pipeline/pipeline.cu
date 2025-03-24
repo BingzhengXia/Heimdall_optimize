@@ -80,7 +80,7 @@ void stop_timer(Stopwatch &timer) {}
 template <typename T, typename U>
 std::pair<T &, U &> tie(T &a, U &b) { return std::pair<T &, U &>(a, b); }
 
-static const int gpu_idx = 4; // set GPU id
+// static const int gpu_idx = 4; // set GPU id
 #define THRUST_DEBUG 1
 
 struct hd_pipeline_t
@@ -112,7 +112,7 @@ hd_error allocate_gpu(const hd_pipeline pl)
   // MPI_Comm comm = pl->communicator;
   // MPI_Comm_rank(comm, &proc_idx);
   int proc_idx = pl->params.beam;
-  // int gpu_idx = pl->params.gpu_id;\
+  int gpu_idx = pl->params.gpu_id;
   //for test
 
   cudaError_t cerror = cudaSetDevice(gpu_idx);
@@ -517,7 +517,7 @@ hd_error hd_execute(hd_pipeline pl,
   start_timer(dedisp_timer);
   derror = dedisp_execute_adv(pl->dedispersion_plan, nsamps,
                               in, in_nbits, in_stride,
-                              d_dm_series, out_nbits, out_stride,
+                              out, out_nbits, out_stride,
                               flags);
   if (derror != DEDISP_NO_ERROR)
   {
@@ -579,7 +579,7 @@ hd_error hd_execute(hd_pipeline pl,
   omp_set_num_threads(N_threads);
 #pragma omp parallel
   {
-    CHECK(cudaSetDevice(gpu_idx));
+    CHECK(cudaSetDevice(pl->params.gpu_id));
     unsigned int num_threads = omp_get_num_threads();
     int tid = omp_get_thread_num();
     // cudaStream_t stream = streams[tid];
