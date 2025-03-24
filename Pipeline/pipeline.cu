@@ -826,13 +826,14 @@ hd_error hd_execute(hd_pipeline pl,
   cudaDeviceSynchronize();
 #pragma omp barrier
 
-  printf("thread complete!\n");
+  // printf("thread complete!\n");
   stop_timer(DSPT_timer);
+  if (pl->params.verbosity >= 1)
   cout << "loop time:          " << DSPT_timer.getTime() << endl;
-  for (size_t i = 0; i < N_threads; ++i)
-  {
-    cout << "thread " << i << " grint indx size is:" << d_giant_inds_t[i].size() << endl;
-  }
+  // for (size_t i = 0; i < N_threads; ++i)
+  // {
+  //   cout << "thread " << i << " grint indx size is:" << d_giant_inds_t[i].size() << endl;
+  // }
 
   // size_t total_size = 0;
   // for (size_t i = 0; i < N_threads; ++i)
@@ -858,7 +859,7 @@ hd_error hd_execute(hd_pipeline pl,
     d_giant_dm_inds.insert(d_giant_dm_inds.end(), d_giant_dm_inds_t[i].begin(), d_giant_dm_inds_t[i].end());
     d_giant_members.insert(d_giant_members.end(), d_giant_members_t[i].begin(), d_giant_members_t[i].end());
   }
-  cout << "d_giant_peaks size is:" << d_giant_peaks.size() << endl;
+  // cout << "d_giant_peaks size is:" << d_giant_peaks.size() << endl;
   // 清理 CUDA 流和锁页内存
   // for (auto &stream : streams)
   // {
